@@ -101,6 +101,14 @@ public:
 	void SetCurrentCameraIndex(int InIndex);
 
 	void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+
+private:
+	// Generate COLMAP format sparse data
+	void GenerateColmapSparseData(const FString& WorkDir, double FocalLength, int ImageWidth, int ImageHeight, const FBoxSphereBounds& Bounds);
+	void WriteColmapCameras(const FString& FilePath, double FocalLength, int ImageWidth, int ImageHeight);
+	void WriteColmapImages(const FString& FilePath, const FBoxSphereBounds& Bounds);
+	void WriteColmapPoints3D(const FString& FilePath);
+
 public:
 	UPROPERTY(EditAnywhere, Config, Category = "Gaussian Splatting")
 	EGaussianSplattingSourceMode SourceMode = EGaussianSplattingSourceMode::Select;

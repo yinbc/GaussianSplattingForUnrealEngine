@@ -379,6 +379,11 @@ void UGaussianSplattingStep_Capture::Capture()
 		UE_LOG(LogGaussianSplatting, Error, TEXT("Failed to create or write to %s"), *CameraPosFilePath);
 	}
 
+	// Generate COLMAP format sparse data
+	ReceiveMessage(TEXT("Generating COLMAP sparse data..."));
+	GenerateColmapSparseData(WorkDir, FocalLength, RenderTarget->SizeX, RenderTarget->SizeY, CurrentBounds);
+	ReceiveMessage(TEXT("COLMAP sparse data generated!"));
+
 	TaskProgressPercent = 0.0f;
 	ReceiveMessage(TEXT("Capture Finished !"));
 
@@ -721,6 +726,156 @@ void UGaussianSplattingStep_Capture::PostEditChangeProperty(FPropertyChangedEven
 		if (RenderTarget) {
 			RenderTarget->ResizeTarget(RenderTargetResolution, RenderTargetResolution);
 		}
+	}
+}
+
+void UGaussianSplattingStep_Capture::GenerateColmapSparseData(const FString& WorkDir, double FocalLength, int ImageWidth, int ImageHeight, const FBoxSphereBounds& Bounds)
+{
+	// Create directory structure: colmap/sparse/0/
+	const FString ColmapDir = WorkDir / TEXT("colmap");
+	const FString SparseDir = ColmapDir / TEXT("sparse");
+	const FString Sparse0Dir = SparseDir / TEXT("0");
+
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+
+	// Remove existing colmap directory if it exists
+	if (PlatformFile.DirectoryExists(*ColmapDir)) {
+		PlatformFile.DeleteDirectoryRecursively(*ColmapDir);
+	}
+
+	// Create directories
+	PlatformFile.CreateDirectoryTree(*Sparse0Dir);
+
+	// Write COLMAP format files
+	WriteColmapCameras(Sparse0Dir / TEXT("cameras.txt"), FocalLength, ImageWidth, ImageHeight);
+	WriteColmapImages(Sparse0Dir / TEXT("images.txt"), Bounds);
+	WriteColmapPoints3D(Sparse0Dir / TEXT("points3D.txt"));
+
+	UE_LOG(LogGaussianSplatting, Log, TEXT("COLMAP sparse data generated at: %s"), *Sparse0Dir);
+}
+
+void UGaussianSplattingStep_Capture::WriteColmapCameras(const FString& FilePath, double FocalLength, int ImageWidth, int ImageHeight)
+{
+	// COLMAP cameras.txt format:
+	// # Camera list with one line of data per camera:
+	// #   CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]
+	// # Number of cameras: 1
+	// 1 SIMPLE_PINHOLE width height f cx cy
+
+	FString Content = TEXT("# Camera list with one line of data per camera:\n");
+	Content += TEXT("#   CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]\n");
+	Content += TEXT("# Number of cameras: 1\n");
+
+	// Camera ID = 1, Model = SIMPLE_PINHOLE
+	// PARAMS: f (focal length), cx (principal point x), cy (principal point y)
+	double cx = ImageWidth / 2.0;
+	double cy = ImageHeight / 2.0;
+
+	Content += FString::Printf(TEXT("1 SIMPLE_PINHOLE %d %d %.6f %.6f %.6f\n"),
+		ImageWidth, ImageHeight, FocalLength, cx, cy);
+
+	if (FFileHelper::SaveStringToFile(Content, *FilePath)) {
+		UE_LOG(LogGaussianSplatting, Log, TEXT("Successfully wrote COLMAP cameras.txt to %s"), *FilePath);
+	}
+	else {
+		UE_LOG(LogGaussianSplatting, Error, TEXT("Failed to write COLMAP cameras.txt to %s"), *FilePath);
+	}
+}
+
+void UGaussianSplattingStep_Capture::WriteColmapImages(const FString& FilePath, const FBoxSphereBounds& Bounds)
+{
+	// COLMAP images.txt format:
+	// # Image list with two lines of data per image:
+	// #   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME
+	// #   POINTS2D[] as (X, Y, POINT3D_ID)
+	// # Number of images: N
+
+	FString Content = TEXT("# Image list with two lines of data per image:\n");
+	Content += TEXT("#   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME\n");
+	Content += TEXT("#   POINTS2D[] as (X, Y, POINT3D_ID)\n");
+	Content += FString::Printf(TEXT("# Number of images: %d\n"), CameraActors.Num());
+
+	for (int i = 0; i < CameraActors.Num(); i++) {
+		// Image ID starts from 1
+		int ImageId = i + 1;
+
+		// Get camera transform
+		FTransform CameraTransform = CameraActors[i]->GetActorTransform();
+		FVector CameraLocation = CameraTransform.GetLocation();
+		FQuat CameraRotation = CameraTransform.GetRotation();
+
+		// Convert to COLMAP coordinate system
+		// Unreal: X forward, Y right, Z up
+		// COLMAP: X right, Y down, Z forward
+		// We need to apply the coordinate system transformation
+
+		// Convert position relative to bounds origin (same as in the original cameras.txt)
+		FVector ColmapPosition = (CameraLocation - Bounds.Origin) / 100.0; // Convert to meters
+
+		// Transform position from Unreal to COLMAP coordinates
+		double tx = ColmapPosition.X;
+		double ty = -ColmapPosition.Z;
+		double tz = -ColmapPosition.Y;
+
+		// Convert rotation from Unreal to COLMAP coordinates
+		// COLMAP uses quaternion in the order: QW, QX, QY, QZ
+		// We need to apply a coordinate system transformation to the rotation
+
+		// Create rotation to convert from Unreal to COLMAP coordinate system
+		// Unreal (X:forward, Y:right, Z:up) -> COLMAP (X:right, Y:down, Z:forward)
+		FQuat CoordSystemRotation = FQuat(FRotator(0, 90, 0)); // Rotate 90 degrees around Z
+		CoordSystemRotation *= FQuat(FRotator(90, 0, 0)); // Then rotate 90 degrees around X
+
+		// Apply coordinate system transformation
+		FQuat ColmapRotation = CoordSystemRotation * CameraRotation * CoordSystemRotation.Inverse();
+
+		// COLMAP expects world-to-camera rotation (inverse of camera-to-world)
+		FQuat WorldToCameraRotation = ColmapRotation.Inverse();
+
+		// Camera ID = 1 (same for all images)
+		int CameraId = 1;
+
+		// Image name
+		FString ImageName = FString::Printf(TEXT("image%04d.png"), ImageId);
+
+		// Write image line (first line)
+		Content += FString::Printf(TEXT("%d %.6f %.6f %.6f %.6f %.6f %.6f %.6f %d %s\n"),
+			ImageId,
+			WorldToCameraRotation.W, WorldToCameraRotation.X, WorldToCameraRotation.Y, WorldToCameraRotation.Z,
+			tx, ty, tz,
+			CameraId,
+			*ImageName);
+
+		// Write empty POINTS2D line (second line) - no 2D points initially
+		Content += TEXT("\n");
+	}
+
+	if (FFileHelper::SaveStringToFile(Content, *FilePath)) {
+		UE_LOG(LogGaussianSplatting, Log, TEXT("Successfully wrote COLMAP images.txt to %s"), *FilePath);
+	}
+	else {
+		UE_LOG(LogGaussianSplatting, Error, TEXT("Failed to write COLMAP images.txt to %s"), *FilePath);
+	}
+}
+
+void UGaussianSplattingStep_Capture::WriteColmapPoints3D(const FString& FilePath)
+{
+	// COLMAP points3D.txt format:
+	// # 3D point list with one line of data per point:
+	// #   POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)
+	// # Number of points: 0
+
+	FString Content = TEXT("# 3D point list with one line of data per point:\n");
+	Content += TEXT("#   POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)\n");
+	Content += TEXT("# Number of points: 0\n");
+
+	// Empty file for now - 3D points will be generated by COLMAP sparse reconstruction
+
+	if (FFileHelper::SaveStringToFile(Content, *FilePath)) {
+		UE_LOG(LogGaussianSplatting, Log, TEXT("Successfully wrote COLMAP points3D.txt to %s"), *FilePath);
+	}
+	else {
+		UE_LOG(LogGaussianSplatting, Error, TEXT("Failed to write COLMAP points3D.txt to %s"), *FilePath);
 	}
 }
 
