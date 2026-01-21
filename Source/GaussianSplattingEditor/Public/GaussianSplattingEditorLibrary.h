@@ -99,4 +99,20 @@ public:
 		UNiagaraSystem* TemplateSystem = nullptr,
 		bool bUseStandaloneNiagraSystem = false
 	);
+
+	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting")
+	static bool ExportPointCloudToColmap(
+		UGaussianSplattingPointCloud* PointCloud,
+		FString OutputDirectory,
+		bool bBinaryFormat = true,
+		bool bCreateDummyCamera = false
+	);
+
+	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting")
+	static bool ExportPlyToColmap(
+		FString PlyFilePath,
+		FString OutputDirectory,
+		bool bBinaryFormat = true,
+		bool bCreateDummyCamera = false
+	);
 };

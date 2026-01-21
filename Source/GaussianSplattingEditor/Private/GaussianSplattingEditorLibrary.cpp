@@ -26,6 +26,8 @@
 #include "JsonObjectConverter.h"
 #include "NiagaraFunctionLibrary.h"
 #include "Kismet/GameplayStatics.h"
+#include "GaussianSplattingEditorSettings.h"
+#include "HAL/PlatformFileManager.h"
 #include <string>
 #include <cmath>
 
@@ -704,3 +706,162 @@ void UGaussianSplattingEditorLibrary::RepartitionPointClouds(UWorld* World, FStr
 	}
 }
 
+bool UGaussianSplattingEditorLibrary::ExportPlyToColmap(
+	FString PlyFilePath,
+	FString OutputDirectory,
+	bool bBinaryFormat /*= true*/,
+	bool bCreateDummyCamera /*= false*/)
+{
+	// Check if PLY file exists
+	if (!FPaths::FileExists(PlyFilePath))
+	{
+		UE_LOG(LogTemp, Error, TEXT("ExportPlyToColmap: PLY file not found: %s"), *PlyFilePath);
+		return false;
+	}
+
+	// Get Python executable path from settings
+	const UGaussianSplattingEditorSettings* Settings = GetDefault<UGaussianSplattingEditorSettings>();
+	FString PythonPath = Settings->GetPythonExecutablePath();
+
+	if (PythonPath.IsEmpty() || !FPaths::FileExists(PythonPath))
+	{
+		UE_LOG(LogTemp, Error, TEXT("ExportPlyToColmap: Python executable not found. Please configure it in Project Settings -> Gaussian Splatting"));
+		return false;
+	}
+
+	// Get plugin directory
+	TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("GaussianSplattingForUnrealEngine"));
+	if (!Plugin.IsValid())
+	{
+		UE_LOG(LogTemp, Error, TEXT("ExportPlyToColmap: Failed to find plugin"));
+		return false;
+	}
+
+	FString PluginDir = Plugin->GetBaseDir();
+	FString ScriptPath = FPaths::Combine(PluginDir, TEXT("Scripts"), TEXT("export_colmap.py"));
+
+	if (!FPaths::FileExists(ScriptPath))
+	{
+		UE_LOG(LogTemp, Error, TEXT("ExportPlyToColmap: Export script not found: %s"), *ScriptPath);
+		return false;
+	}
+
+	// Create output directory if it doesn't exist
+	if (!FPaths::DirectoryExists(OutputDirectory))
+	{
+		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+		if (!PlatformFile.CreateDirectoryTree(*OutputDirectory))
+		{
+			UE_LOG(LogTemp, Error, TEXT("ExportPlyToColmap: Failed to create output directory: %s"), *OutputDirectory);
+			return false;
+		}
+	}
+
+	// Build command line arguments
+	FString Format = bBinaryFormat ? TEXT("bin") : TEXT("txt");
+	FString Command = FString::Printf(
+		TEXT("\"%s\" \"%s\" \"%s\" --format %s"),
+		*ScriptPath,
+		*PlyFilePath,
+		*OutputDirectory,
+		*Format
+	);
+	
+	if (bCreateDummyCamera)
+	{
+		Command += TEXT(" --create-dummy-camera");
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("ExportPlyToColmap: Executing Python script..."));
+	UE_LOG(LogTemp, Log, TEXT("Command: %s %s"), *PythonPath, *Command);
+
+	// Execute Python script
+	void* ReadPipe = nullptr;
+	void* WritePipe = nullptr;
+	verify(FPlatformProcess::CreatePipe(ReadPipe, WritePipe));
+
+	FProcHandle ProcHandle = FPlatformProcess::CreateProc(
+		*PythonPath,
+		*Command,
+		false,  // bLaunchDetached
+		true,   // bLaunchHidden
+		true,   // bLaunchReallyHidden
+		nullptr,  // OutProcessID
+		0,      // PriorityModifier
+		nullptr,  // OptionalWorkingDirectory
+		WritePipe,  // PipeWriteChild
+		ReadPipe    // PipeReadChild
+	);
+
+	if (!ProcHandle.IsValid())
+	{
+		UE_LOG(LogTemp, Error, TEXT("ExportPlyToColmap: Failed to launch Python process"));
+		FPlatformProcess::ClosePipe(ReadPipe, WritePipe);
+		return false;
+	}
+
+	// Wait for process to complete
+	int32 ReturnCode = -1;
+	FString OutputLog;
+
+	while (FPlatformProcess::IsProcRunning(ProcHandle))
+	{
+		FString Output = FPlatformProcess::ReadPipe(ReadPipe);
+		if (!Output.IsEmpty())
+		{
+			OutputLog += Output;
+			UE_LOG(LogTemp, Log, TEXT("%s"), *Output);
+		}
+		FPlatformProcess::Sleep(0.1f);
+	}
+
+	// Read any remaining output
+	FString FinalOutput = FPlatformProcess::ReadPipe(ReadPipe);
+	if (!FinalOutput.IsEmpty())
+	{
+		OutputLog += FinalOutput;
+		UE_LOG(LogTemp, Log, TEXT("%s"), *FinalOutput);
+	}
+
+	FPlatformProcess::GetProcReturnCode(ProcHandle, &ReturnCode);
+	FPlatformProcess::CloseProc(ProcHandle);
+	FPlatformProcess::ClosePipe(ReadPipe, WritePipe);
+
+	if (ReturnCode == 0)
+	{
+		UE_LOG(LogTemp, Log, TEXT("ExportPlyToColmap: Successfully exported to COLMAP format in: %s"), *OutputDirectory);
+		return true;
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("ExportPlyToColmap: Export failed with return code: %d"), ReturnCode);
+		UE_LOG(LogTemp, Error, TEXT("Output: %s"), *OutputLog);
+		return false;
+	}
+}
+
+bool UGaussianSplattingEditorLibrary::ExportPointCloudToColmap(
+	UGaussianSplattingPointCloud* PointCloud,
+	FString OutputDirectory,
+	bool bBinaryFormat /*= true*/,
+	bool bCreateDummyCamera /*= false*/)
+{
+	if (PointCloud == nullptr)
+	{
+		UE_LOG(LogTemp, Error, TEXT("ExportPointCloudToColmap: Invalid PointCloud"));
+		return false;
+	}
+
+	// Get the source PLY file path from the PointCloud asset
+	FString PlyFilePath = PointCloud->GetFilePath();
+
+	if (PlyFilePath.IsEmpty() || !FPaths::FileExists(PlyFilePath))
+	{
+		UE_LOG(LogTemp, Error, TEXT("ExportPointCloudToColmap: PointCloud does not have a valid source PLY file path"));
+		UE_LOG(LogTemp, Error, TEXT("Note: This function requires the original PLY file. Please use ExportPlyToColmap with the PLY file path directly."));
+		return false;
+	}
+
+	// Call ExportPlyToColmap with the PLY file path
+	return ExportPlyToColmap(PlyFilePath, OutputDirectory, bBinaryFormat, bCreateDummyCamera);
+}
