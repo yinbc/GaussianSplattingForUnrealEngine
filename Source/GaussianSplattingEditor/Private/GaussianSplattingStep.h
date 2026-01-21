@@ -104,7 +104,7 @@ public:
 
 private:
 	// Generate COLMAP format sparse data
-	void GenerateColmapSparseData(const FString& WorkDir, double FocalLength, int ImageWidth, int ImageHeight, const FBoxSphereBounds& Bounds);
+	void GenerateColmapSparseData(const FString& InWorkDir, double FocalLength, int ImageWidth, int ImageHeight, const FBoxSphereBounds& Bounds);
 	void WriteColmapCameras(const FString& FilePath, double FocalLength, int ImageWidth, int ImageHeight);
 	void WriteColmapImages(const FString& FilePath, const FBoxSphereBounds& Bounds);
 	void WriteColmapPoints3D(const FString& FilePath);

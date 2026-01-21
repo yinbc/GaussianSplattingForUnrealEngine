@@ -729,10 +729,10 @@ void UGaussianSplattingStep_Capture::PostEditChangeProperty(FPropertyChangedEven
 	}
 }
 
-void UGaussianSplattingStep_Capture::GenerateColmapSparseData(const FString& WorkDir, double FocalLength, int ImageWidth, int ImageHeight, const FBoxSphereBounds& Bounds)
+void UGaussianSplattingStep_Capture::GenerateColmapSparseData(const FString& InWorkDir, double FocalLength, int ImageWidth, int ImageHeight, const FBoxSphereBounds& Bounds)
 {
 	// Create directory structure: colmap/sparse/0/
-	const FString ColmapDir = WorkDir / TEXT("colmap");
+	const FString ColmapDir = InWorkDir / TEXT("colmap");
 	const FString SparseDir = ColmapDir / TEXT("sparse");
 	const FString Sparse0Dir = SparseDir / TEXT("0");
 
