@@ -27,13 +27,12 @@ bool Success = UGaussianSplattingEditorLibrary::ExportPlyToColmap(
 );
 ```
 
-#### 方法2: 从PointCloud资产导出
+#### 方法2: 使用别名函数导出
 
 ```cpp
-// C++示例
-UGaussianSplattingPointCloud* PointCloud = /* 你的点云资产 */;
+// C++示例（ExportPointCloudToColmap 是 ExportPlyToColmap 的别名）
 bool Success = UGaussianSplattingEditorLibrary::ExportPointCloudToColmap(
-    PointCloud,                             // 点云资产
+    TEXT("/Path/To/point_cloud.ply"),      // PLY文件路径
     TEXT("/Path/To/Output/colmap"),        // 输出目录
     true,                                   // 使用二进制格式
     false                                   // 不创建虚拟相机
@@ -53,9 +52,11 @@ bool Success = UGaussianSplattingEditorLibrary::ExportPointCloudToColmap(
 
 #### ExportPointCloudToColmap
 
+**注意**: 此函数是 `ExportPlyToColmap` 的别名，参数相同。
+
 | 参数名 | 类型 | 说明 |
 |--------|------|------|
-| `PointCloud` | UGaussianSplattingPointCloud* | 点云资产对象 |
+| `PlyFilePath` | FString | PLY文件的完整路径 |
 | `OutputDirectory` | FString | COLMAP文件输出目录 |
 | `bBinaryFormat` | bool | true=二进制格式(.bin), false=文本格式(.txt) |
 | `bCreateDummyCamera` | bool | 是否创建虚拟相机和图像文件 |
@@ -152,9 +153,9 @@ error = 1 - opacity_value
 2. 导出时只使用SH0系数(DC分量),代表平均颜色
 3. 如需完整的视角相关颜色,需要保留完整的SH系数
 
-### Q3: ExportPointCloudToColmap失败
+### Q3: 两个导出函数有什么区别？
 
-**A:** 该函数需要PointCloud资产关联原始PLY文件。如果失败,请直接使用 `ExportPlyToColmap` 并提供PLY文件路径。
+**A:** `ExportPointCloudToColmap` 和 `ExportPlyToColmap` 功能完全相同，前者只是后者的别名，为了保持API的一致性而保留。建议直接使用 `ExportPlyToColmap`。
 
 ### Q4: COLMAP无法读取导出的文件
 
@@ -174,7 +175,7 @@ error = 1 - opacity_value
 
 2. **C++接口**: `GaussianSplattingEditorLibrary`
    - `ExportPlyToColmap()` - PLY文件导出
-   - `ExportPointCloudToColmap()` - 资产导出
+   - `ExportPointCloudToColmap()` - PLY文件导出（别名函数）
 
 3. **COLMAP工具**: `Scripts/read_write_model.py`
    - COLMAP格式读写库

@@ -841,27 +841,11 @@ bool UGaussianSplattingEditorLibrary::ExportPlyToColmap(
 }
 
 bool UGaussianSplattingEditorLibrary::ExportPointCloudToColmap(
-	UGaussianSplattingPointCloud* PointCloud,
+	FString PlyFilePath,
 	FString OutputDirectory,
 	bool bBinaryFormat /*= true*/,
 	bool bCreateDummyCamera /*= false*/)
 {
-	if (PointCloud == nullptr)
-	{
-		UE_LOG(LogTemp, Error, TEXT("ExportPointCloudToColmap: Invalid PointCloud"));
-		return false;
-	}
-
-	// Get the source PLY file path from the PointCloud asset
-	FString PlyFilePath = PointCloud->GetFilePath();
-
-	if (PlyFilePath.IsEmpty() || !FPaths::FileExists(PlyFilePath))
-	{
-		UE_LOG(LogTemp, Error, TEXT("ExportPointCloudToColmap: PointCloud does not have a valid source PLY file path"));
-		UE_LOG(LogTemp, Error, TEXT("Note: This function requires the original PLY file. Please use ExportPlyToColmap with the PLY file path directly."));
-		return false;
-	}
-
-	// Call ExportPlyToColmap with the PLY file path
+	// This function is an alias for ExportPlyToColmap for backward compatibility
 	return ExportPlyToColmap(PlyFilePath, OutputDirectory, bBinaryFormat, bCreateDummyCamera);
 }

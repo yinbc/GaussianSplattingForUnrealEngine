@@ -102,7 +102,7 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting")
 	static bool ExportPointCloudToColmap(
-		UGaussianSplattingPointCloud* PointCloud,
+		FString PlyFilePath,
 		FString OutputDirectory,
 		bool bBinaryFormat = true,
 		bool bCreateDummyCamera = false
