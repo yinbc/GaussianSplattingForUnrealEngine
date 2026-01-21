@@ -248,13 +248,15 @@ TArray<FGaussianSplattingPoint> ParseSplatFromStream(std::istream& in)
 		Point.Quat = FQuat4f(Quat.X, -Quat.Z, -Quat.Y, Quat.W);
 
 		// Color
+		// Note: SH_0 * f_dc + 0.5 already gives linear RGB values (0-1)
+		// No need for SRGBToLinear conversion as it would darken the colors
 		FLinearColor Color = FLinearColor(
 			SH_0 * values[vertexOffset + colorIdx[0]] + 0.5f,
 			SH_0 * values[vertexOffset + colorIdx[1]] + 0.5f,
 			SH_0 * values[vertexOffset + colorIdx[2]] + 0.5f,
 			1.0f / (1.0f + FMath::Exp(-values[vertexOffset + alphaIdx[0]]))
 		);
-		Point.Color = SRGBToLinear(Color);
+		Point.Color = Color;  // Fixed: removed SRGBToLinear to prevent double gamma correction
 	}
 	return Result;
 }
