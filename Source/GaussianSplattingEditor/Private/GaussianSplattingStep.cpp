@@ -261,10 +261,13 @@ void UGaussianSplattingStep_Capture::Capture()
 	const double HalfFOVRadians = FMath::DegreesToRadians(SceneCaptureComp->FOVAngle / 2.0);
 	const double DistanceFromSphere = Radius / FMath::Tan(HalfFOVRadians) * 2 * CaptureDistanceScale;
 	const double FocalLength = RenderTarget->SizeX / (2 * FMath::Tan(HalfFOVRadians));
+	const double PrincipalPointX = RenderTarget->SizeX / 2.0;
+	const double PrincipalPointY = RenderTarget->SizeY / 2.0;
 	const FString DatabaseImagesDir = WorkDir / "images";
 	const FString DatabaseMasksDir = WorkDir / "masks";
 	const FString DatabaseDepthsDir = WorkDir / "depths";
 	const FString CameraPosFilePath = WorkDir / "cameras.txt";
+	const FString CameraIntrinsicsFilePath = WorkDir / "camera_intrinsics.txt";
 
 	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 	if (PlatformFile.DirectoryExists(*DatabaseImagesDir)){
@@ -377,6 +380,21 @@ void UGaussianSplattingStep_Capture::Capture()
 	}
 	else {
 		UE_LOG(LogGaussianSplatting, Error, TEXT("Failed to create or write to %s"), *CameraPosFilePath);
+	}
+
+	// Save camera intrinsics for COLMAP (SIMPLE_PINHOLE model: f, cx, cy)
+	FString CameraIntrinsicsContent = FString::Printf(TEXT("SIMPLE_PINHOLE\n%d %d\n%lf %lf %lf\n"),
+		RenderTarget->SizeX,
+		RenderTarget->SizeY,
+		FocalLength,
+		PrincipalPointX,
+		PrincipalPointY
+	);
+	if (FFileHelper::SaveStringToFile(CameraIntrinsicsContent, *CameraIntrinsicsFilePath)) {
+		UE_LOG(LogGaussianSplatting, Warning, TEXT("Successfully created camera intrinsics: f=%lf, cx=%lf, cy=%lf"), FocalLength, PrincipalPointX, PrincipalPointY);
+	}
+	else {
+		UE_LOG(LogGaussianSplatting, Error, TEXT("Failed to create or write to %s"), *CameraIntrinsicsFilePath);
 	}
 
 	TaskProgressPercent = 0.0f;
