@@ -59,34 +59,91 @@ class GaussianSplattingHelper:
             printImmediately(f"Command '{command}' failed with return code {process.returncode}", file=sys.stderr)
 
     def executeSparseReconstruction(self):
-        if os.path.exists("./sparse"):
-            shutil.rmtree("./sparse")
+        # Check if pre-generated COLMAP model files exist (from Unreal capture with known camera intrinsics)
+        has_pregenerated_model = (
+            os.path.exists("./sparse/0/cameras.txt") and
+            os.path.exists("./sparse/0/images.txt") and
+            os.path.exists("./sparse/0/points3D.txt")
+        )
+
         os.makedirs("./images", exist_ok=True)
-        os.makedirs("./sparse/0", exist_ok=True)
+
         if os.path.exists("./database.db"):
             os.remove("./database.db")
-        command = f"{self.args.colmap} feature_extractor --database_path ./database.db --image_path ./images --ImageReader.camera_model SIMPLE_PINHOLE"
-        if os.path.exists("./masks") :
-            command += " --ImageReader.mask_path ./masks "
-        if self.args.extractor:
-            command += str(self.args.extractor);
-        self.runCommand(command)
-        command = f"{self.args.colmap} exhaustive_matcher --database_path ./database.db "
-        if self.args.matcher:
-            command += str(self.args.matcher);
-        self.runCommand(command)
 
-        # self.runCommand(f"{self.args.colmap} point_triangulator --database_path database.db --image_path images --input_path ./text --output_path ./pointtriangulator --Mapper.fix_existing_images 1 --Mapper.ba_refine_focal_length 0")
-        
-        command = f"{self.args.colmap} mapper --database_path ./database.db --image_path ./images --output_path ./sparse  --Mapper.fix_existing_images 1 "
-        if self.args.mapper:
-            command += str(self.args.mapper);
-        self.runCommand(command)
-        
-        command = f"{self.args.colmap} model_aligner --input_path ./sparse/0 --output_path ./sparse/0 --ref_images_path ./cameras.txt --ref_is_gps 0 --alignment_type custom --alignment_max_error 3 "
-        if self.args.aligner:
-            command += str(self.args.aligner);
-        self.runCommand(command)
+        if has_pregenerated_model:
+            # Use pre-generated camera model with known intrinsics
+            printImmediately("Found pre-generated COLMAP model files with known camera intrinsics")
+
+            # Read camera parameters from the pre-generated cameras.txt
+            camera_model = "PINHOLE"
+            camera_params = ""
+            with open("./sparse/0/cameras.txt", 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line.startswith('#') and line:
+                        parts = line.split()
+                        if len(parts) >= 5:
+                            # Format: CAMERA_ID MODEL WIDTH HEIGHT PARAMS...
+                            camera_model = parts[1]
+                            camera_params = ','.join(parts[4:])
+                        break
+
+            printImmediately(f"Using camera model: {camera_model}, params: {camera_params}")
+
+            # Feature extraction with known camera parameters
+            command = f"{self.args.colmap} feature_extractor --database_path ./database.db --image_path ./images --ImageReader.camera_model {camera_model} --ImageReader.single_camera 1"
+            if camera_params:
+                command += f" --ImageReader.camera_params \"{camera_params}\""
+            if os.path.exists("./masks"):
+                command += " --ImageReader.mask_path ./masks "
+            if self.args.extractor:
+                command += str(self.args.extractor)
+            self.runCommand(command)
+
+            # Feature matching
+            command = f"{self.args.colmap} exhaustive_matcher --database_path ./database.db "
+            if self.args.matcher:
+                command += str(self.args.matcher)
+            self.runCommand(command)
+
+            # Use point_triangulator instead of mapper to triangulate points using known camera poses
+            # This preserves the exact camera intrinsics and extrinsics from the capture
+            command = f"{self.args.colmap} point_triangulator --database_path ./database.db --image_path ./images --input_path ./sparse/0 --output_path ./sparse/0 --Mapper.ba_refine_focal_length 0 --Mapper.ba_refine_principal_point 0 --Mapper.ba_refine_extra_params 0"
+            if self.args.mapper:
+                command += str(self.args.mapper)
+            self.runCommand(command)
+
+            printImmediately("Sparse reconstruction completed using pre-generated camera parameters")
+        else:
+            # Original workflow: estimate camera parameters from scratch
+            printImmediately("No pre-generated COLMAP model found, using standard reconstruction workflow")
+
+            if os.path.exists("./sparse"):
+                shutil.rmtree("./sparse")
+            os.makedirs("./sparse/0", exist_ok=True)
+
+            command = f"{self.args.colmap} feature_extractor --database_path ./database.db --image_path ./images --ImageReader.camera_model SIMPLE_PINHOLE"
+            if os.path.exists("./masks"):
+                command += " --ImageReader.mask_path ./masks "
+            if self.args.extractor:
+                command += str(self.args.extractor)
+            self.runCommand(command)
+
+            command = f"{self.args.colmap} exhaustive_matcher --database_path ./database.db "
+            if self.args.matcher:
+                command += str(self.args.matcher)
+            self.runCommand(command)
+
+            command = f"{self.args.colmap} mapper --database_path ./database.db --image_path ./images --output_path ./sparse --Mapper.fix_existing_images 1 "
+            if self.args.mapper:
+                command += str(self.args.mapper)
+            self.runCommand(command)
+
+            command = f"{self.args.colmap} model_aligner --input_path ./sparse/0 --output_path ./sparse/0 --ref_images_path ./cameras.txt --ref_is_gps 0 --alignment_type custom --alignment_max_error 3 "
+            if self.args.aligner:
+                command += str(self.args.aligner)
+            self.runCommand(command)
        
     def executeColmapView(self):
         colmap_executable_path = self.args.colmap

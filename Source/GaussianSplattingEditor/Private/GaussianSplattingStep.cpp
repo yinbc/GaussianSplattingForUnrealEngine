@@ -240,7 +240,7 @@ void UGaussianSplattingStep_Capture::Capture()
 				LandscapeComponents.Add(LandscapeComp);
 			}
 		}
-		
+
 		TArray<AActor*> ShowOnlyActors;
 		UGameplayStatics::GetAllActorsOfClass(World, ASkyLight::StaticClass(), ShowOnlyActors);
 		ShowOnlyActors.Append(SelectionActors);
@@ -261,10 +261,13 @@ void UGaussianSplattingStep_Capture::Capture()
 	const double HalfFOVRadians = FMath::DegreesToRadians(SceneCaptureComp->FOVAngle / 2.0);
 	const double DistanceFromSphere = Radius / FMath::Tan(HalfFOVRadians) * 2 * CaptureDistanceScale;
 	const double FocalLength = RenderTarget->SizeX / (2 * FMath::Tan(HalfFOVRadians));
+	const double CX = RenderTarget->SizeX / 2.0;
+	const double CY = RenderTarget->SizeY / 2.0;
 	const FString DatabaseImagesDir = WorkDir / "images";
 	const FString DatabaseMasksDir = WorkDir / "masks";
 	const FString DatabaseDepthsDir = WorkDir / "depths";
 	const FString CameraPosFilePath = WorkDir / "cameras.txt";
+	const FString ColmapSparseDir = WorkDir / "sparse" / "0";
 
 	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 	if (PlatformFile.DirectoryExists(*DatabaseImagesDir)){
@@ -276,14 +279,21 @@ void UGaussianSplattingStep_Capture::Capture()
 	if (PlatformFile.DirectoryExists(*DatabaseDepthsDir)) {
 		PlatformFile.DeleteDirectoryRecursively(*DatabaseDepthsDir);
 	}
-	if (PlatformFile.DirectoryExists(*CameraPosFilePath)) {
-		PlatformFile.DeleteDirectoryRecursively(*CameraPosFilePath);
+	if (PlatformFile.FileExists(*CameraPosFilePath)) {
+		PlatformFile.DeleteFile(*CameraPosFilePath);
 	}
+	if (PlatformFile.DirectoryExists(*ColmapSparseDir)) {
+		PlatformFile.DeleteDirectoryRecursively(*ColmapSparseDir);
+	}
+	PlatformFile.CreateDirectoryTree(*ColmapSparseDir);
 
 	UGaussianSplattingEditorLibrary::FakeEngineTick(World, 0.03f, 6);
 	TaskProgressPercent = 0.0f;
 
 	FString ImageRefPosFileContent = "";
+	FString ColmapImagesFileContent = "# Image list with two lines of data per image:\n#   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME\n#   POINTS2D[] as (X, Y, POINT3D_ID)\n";
+	ColmapImagesFileContent += FString::Printf(TEXT("# Number of images: %d\n"), CameraActors.Num());
+
 	for (int i = 0; i < CameraActors.Num(); i++) {
 		FString ImageFileName = FString::Printf(TEXT("image%04d.png"), i + 1);
 		SceneCaptureComp->SetWorldTransform(CameraActors[i]->GetTransform());
@@ -352,14 +362,14 @@ void UGaussianSplattingStep_Capture::Capture()
 			bRequestCancelTask = false;
 			break;
 		}
-		
+
 		FImageView ImageView(FinalColors.GetData(), RenderTarget->SizeX, RenderTarget->SizeY);
-		//FImageUtils::SaveImageByExtension(*(DatabaseImagesDir / ImageFileName), ImageView);
 		FImageUtils::SaveImageByExtension(*(DatabaseImagesDir / FString::Printf(TEXT("image%04d.png"), i + 1)), ImageView);
 
 		FImageView MaskView(MaskColors.GetData(), RenderTarget->SizeX, RenderTarget->SizeY);
 		FImageUtils::SaveImageByExtension(*(DatabaseMasksDir / ImageFileName), MaskView);
 
+		// Generate reference position file for model_aligner (original format)
 		FVector ColmapPosition = (CameraActors[i]->GetActorLocation() - CurrentBounds.Origin) / 100.0;
 		ImageRefPosFileContent += FString::Printf(TEXT("%s %lf %lf %lf\n"),
 			*ImageFileName,
@@ -368,15 +378,87 @@ void UGaussianSplattingStep_Capture::Capture()
 			-ColmapPosition.Y
 		);
 
+		// Generate COLMAP images.txt format
+		// COLMAP coordinate system: X-right, Y-down, Z-forward (camera looking direction)
+		// Unreal coordinate system: X-forward, Y-right, Z-up
+		// We need to convert camera pose from Unreal to COLMAP
+		FTransform CameraTransform = CameraActors[i]->GetActorTransform();
+		FVector CameraLocation = (CameraTransform.GetLocation() - CurrentBounds.Origin) / 100.0;
+		FQuat CameraRotation = CameraTransform.GetRotation();
+
+		// Rotation matrix to convert from Unreal to COLMAP camera coordinate system
+		// Unreal camera looks along +X, COLMAP camera looks along +Z
+		// Unreal: X-forward, Y-right, Z-up
+		// COLMAP: X-right, Y-down, Z-forward
+		// Transform: COLMAP_X = Unreal_Y, COLMAP_Y = -Unreal_Z, COLMAP_Z = Unreal_X
+		FQuat UnrealToColmapCamera = FQuat(FRotator(0, -90, 90));
+		FQuat ColmapCameraRotation = CameraRotation * UnrealToColmapCamera;
+
+		// COLMAP stores rotation as world-to-camera (inverse of camera-to-world)
+		FQuat ColmapQuat = ColmapCameraRotation.Inverse();
+
+		// Convert position: Unreal (X,Y,Z) -> COLMAP (Y, -Z, X)
+		// COLMAP stores translation as world-to-camera
+		FVector ColmapCameraPos = FVector(CameraLocation.Y, -CameraLocation.Z, CameraLocation.X);
+		// T = -R * C (translation in world-to-camera frame)
+		FVector ColmapTranslation = ColmapQuat.RotateVector(-ColmapCameraPos);
+
+		// IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME
+		ColmapImagesFileContent += FString::Printf(TEXT("%d %.17g %.17g %.17g %.17g %.17g %.17g %.17g 1 %s\n"),
+			i + 1,
+			ColmapQuat.W, ColmapQuat.X, ColmapQuat.Y, ColmapQuat.Z,
+			ColmapTranslation.X, ColmapTranslation.Y, ColmapTranslation.Z,
+			*ImageFileName
+		);
+		// Second line: empty POINTS2D (no 2D-3D correspondences yet)
+		ColmapImagesFileContent += TEXT("\n");
+
 		TaskProgressPercent = i /(float) CameraActors.Num();
 
 		UGaussianSplattingEditorLibrary::FakeEngineTick(World);
 	}
+
+	// Save reference position file for model_aligner
 	if (FFileHelper::SaveStringToFile(ImageRefPosFileContent, *CameraPosFilePath)) {
 		UE_LOG(LogGaussianSplatting, Warning, TEXT("Successfully created and wrote to %s"), *CameraPosFilePath);
 	}
 	else {
 		UE_LOG(LogGaussianSplatting, Error, TEXT("Failed to create or write to %s"), *CameraPosFilePath);
+	}
+
+	// Save COLMAP sparse model files
+	// cameras.txt - Camera intrinsics
+	FString ColmapCamerasFileContent = "# Camera list with one line of data per camera:\n#   CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]\n# Number of cameras: 1\n";
+	ColmapCamerasFileContent += FString::Printf(TEXT("1 PINHOLE %d %d %.17g %.17g %.17g %.17g\n"),
+		RenderTarget->SizeX, RenderTarget->SizeY,
+		FocalLength, FocalLength, CX, CY
+	);
+
+	FString ColmapCamerasFilePath = ColmapSparseDir / "cameras.txt";
+	if (FFileHelper::SaveStringToFile(ColmapCamerasFileContent, *ColmapCamerasFilePath)) {
+		UE_LOG(LogGaussianSplatting, Warning, TEXT("Successfully created COLMAP cameras.txt: %s"), *ColmapCamerasFilePath);
+	}
+	else {
+		UE_LOG(LogGaussianSplatting, Error, TEXT("Failed to create COLMAP cameras.txt: %s"), *ColmapCamerasFilePath);
+	}
+
+	// images.txt - Camera extrinsics
+	FString ColmapImagesFilePath = ColmapSparseDir / "images.txt";
+	if (FFileHelper::SaveStringToFile(ColmapImagesFileContent, *ColmapImagesFilePath)) {
+		UE_LOG(LogGaussianSplatting, Warning, TEXT("Successfully created COLMAP images.txt: %s"), *ColmapImagesFilePath);
+	}
+	else {
+		UE_LOG(LogGaussianSplatting, Error, TEXT("Failed to create COLMAP images.txt: %s"), *ColmapImagesFilePath);
+	}
+
+	// points3D.txt - Empty 3D points (will be filled by triangulation)
+	FString ColmapPoints3DFileContent = "# 3D point list with one line of data per point:\n#   POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)\n# Number of points: 0\n";
+	FString ColmapPoints3DFilePath = ColmapSparseDir / "points3D.txt";
+	if (FFileHelper::SaveStringToFile(ColmapPoints3DFileContent, *ColmapPoints3DFilePath)) {
+		UE_LOG(LogGaussianSplatting, Warning, TEXT("Successfully created COLMAP points3D.txt: %s"), *ColmapPoints3DFilePath);
+	}
+	else {
+		UE_LOG(LogGaussianSplatting, Error, TEXT("Failed to create COLMAP points3D.txt: %s"), *ColmapPoints3DFilePath);
 	}
 
 	TaskProgressPercent = 0.0f;
