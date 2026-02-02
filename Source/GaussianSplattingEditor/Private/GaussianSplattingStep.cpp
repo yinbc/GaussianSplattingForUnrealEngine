@@ -383,25 +383,43 @@ void UGaussianSplattingStep_Capture::Capture()
 		// Unreal coordinate system: X-forward, Y-right, Z-up
 		// We need to convert camera pose from Unreal to COLMAP
 		FTransform CameraTransform = CameraActors[i]->GetActorTransform();
-		FVector CameraLocation = (CameraTransform.GetLocation() - CurrentBounds.Origin) / 100.0;
-		FQuat CameraRotation = CameraTransform.GetRotation();
+		FVector CameraLocationUE = (CameraTransform.GetLocation() - CurrentBounds.Origin) / 100.0;
+		FQuat CameraRotationUE = CameraTransform.GetRotation();
 
-		// Rotation matrix to convert from Unreal to COLMAP camera coordinate system
-		// Unreal camera looks along +X, COLMAP camera looks along +Z
-		// Unreal: X-forward, Y-right, Z-up
-		// COLMAP: X-right, Y-down, Z-forward
-		// Transform: COLMAP_X = Unreal_Y, COLMAP_Y = -Unreal_Z, COLMAP_Z = Unreal_X
-		FQuat UnrealToColmapCamera = FQuat(FRotator(0, -90, 90));
-		FQuat ColmapCameraRotation = CameraRotation * UnrealToColmapCamera;
+		// Get camera direction vectors in Unreal world coordinates
+		FVector ForwardUE = CameraRotationUE.GetForwardVector();  // Camera looks along +X in Unreal
+		FVector RightUE = CameraRotationUE.GetRightVector();      // +Y in Unreal
+		FVector UpUE = CameraRotationUE.GetUpVector();            // +Z in Unreal
 
-		// COLMAP stores rotation as world-to-camera (inverse of camera-to-world)
-		FQuat ColmapQuat = ColmapCameraRotation.Inverse();
+		// Convert vectors from Unreal world to COLMAP world coordinate system
+		// Unreal: X=Forward, Y=Right, Z=Up
+		// COLMAP world: X=Right, Y=Down, Z=Forward (same convention as OpenGL)
+		// Mapping: COLMAP_X = UE_Y, COLMAP_Y = -UE_Z, COLMAP_Z = UE_X
+		auto ConvertToColmapWorld = [](const FVector& UE) -> FVector {
+			return FVector(UE.Y, -UE.Z, UE.X);
+		};
 
-		// Convert position: Unreal (X,Y,Z) -> COLMAP (Y, -Z, X)
-		// COLMAP stores translation as world-to-camera
-		FVector ColmapCameraPos = FVector(CameraLocation.Y, -CameraLocation.Z, CameraLocation.X);
-		// T = -R * C (translation in world-to-camera frame)
-		FVector ColmapTranslation = ColmapQuat.RotateVector(-ColmapCameraPos);
+		FVector CameraLocationCOLMAP = ConvertToColmapWorld(CameraLocationUE);
+		FVector ForwardCOLMAP = ConvertToColmapWorld(ForwardUE);
+		FVector RightCOLMAP = ConvertToColmapWorld(RightUE);
+		FVector UpCOLMAP = ConvertToColmapWorld(UpUE);
+
+		// Build COLMAP rotation matrix (world-to-camera)
+		// COLMAP camera coordinate system: X=right, Y=down, Z=forward (looking direction)
+		// The rotation matrix rows are the camera axes expressed in world coordinates
+		// Row 0: camera X-axis (right) = RightCOLMAP
+		// Row 1: camera Y-axis (down) = -UpCOLMAP
+		// Row 2: camera Z-axis (forward) = ForwardCOLMAP
+		FMatrix RotationMatrix = FMatrix::Identity;
+		RotationMatrix.M[0][0] = RightCOLMAP.X;   RotationMatrix.M[0][1] = RightCOLMAP.Y;   RotationMatrix.M[0][2] = RightCOLMAP.Z;
+		RotationMatrix.M[1][0] = -UpCOLMAP.X;     RotationMatrix.M[1][1] = -UpCOLMAP.Y;     RotationMatrix.M[1][2] = -UpCOLMAP.Z;
+		RotationMatrix.M[2][0] = ForwardCOLMAP.X; RotationMatrix.M[2][1] = ForwardCOLMAP.Y; RotationMatrix.M[2][2] = ForwardCOLMAP.Z;
+
+		// Convert rotation matrix to quaternion
+		FQuat ColmapQuat = RotationMatrix.ToQuat();
+
+		// COLMAP translation: t = -R * C (where C is camera position in world coordinates)
+		FVector ColmapTranslation = ColmapQuat.RotateVector(-CameraLocationCOLMAP);
 
 		// IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME
 		ColmapImagesFileContent += FString::Printf(TEXT("%d %.17g %.17g %.17g %.17g %.17g %.17g %.17g 1 %s\n"),
